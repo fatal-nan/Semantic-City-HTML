@@ -1246,10 +1246,14 @@
       import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
       import { DRACOLoader } from "three/addons/loaders/DRACOLoader.js";
 
-      // 仅在 HTTP(S) 非 blob 环境下自动请求相对路径 GLB，避免预览沙盒报错
+      // A file tab cannot fetch adjacent GLBs. Use the published originals for that entry point.
       const CAN_FETCH_RELATIVE =
         (window.location.protocol === "http:" || window.location.protocol === "https:") &&
         !window.location.href.startsWith("blob:");
+
+      const modelBase = location.protocol === "file:"
+        ? "https://fatal-nan.github.io/Semantic-City-HTML/"
+        : CAN_FETCH_RELATIVE ? document.baseURI : null;
 
       // ==================== AI API 默认配置（已默认接入 DeepSeek） ====================
       const AI_PROVIDER_PRESETS = {
@@ -1713,7 +1717,7 @@
       const labelStabilityEl = document.querySelector("#labelStability");
       const labelSpreadEl = document.querySelector("#labelSpread");
 
-      const appState = { frameReady: true, welcomeShown: false, glbFailedCount: 0 };
+      const appState = { frameReady: true, welcomeShown: false };
       const mouseNDC = new THREE.Vector2(0, 0);
 
       let isDetailView = false;
@@ -1915,43 +1919,26 @@
       }
 
       async function autoLoadAllGLBs() {
-        for (let i = 0; i < SUBJECT_CONFIGS.length; i++) {
-          const cfg = SUBJECT_CONFIGS[i];
-          const cachedBuffer = await getGLBBufferFromCache(cfg.id);
-          if (cachedBuffer && cachedBuffer.byteLength > 0) {
+        await Promise.all(SUBJECT_CONFIGS.map(async (cfg, i) => {
+          const cached = await getGLBBufferFromCache(cfg.id);
+          if (cached?.byteLength) {
             try {
-              await parseAndMountGLBBuffer(i, cachedBuffer);
-              continue;
-            } catch (e) {
-              console.warn(`Cached GLB ${cfg.id} failed:`, e);
+              await parseAndMountGLBBuffer(i, cached);
+              return;
+            } catch (err) {
+              console.warn("Could not restore cached specimen", cfg.id, err);
             }
           }
-
-          if (CAN_FETCH_RELATIVE) {
-            try {
-              const resolvedUrl = new URL(cfg.file, window.location.href).href;
-              gltfLoader.load(
-                resolvedUrl,
-                (gltf) => mountGLTFToSlot(i, gltf),
-                undefined,
-                () => {
-                  appState.glbFailedCount += 1;
-                  updateLoadingStatus();
-                }
-              );
-            } catch {
-              appState.glbFailedCount += 1;
-            }
-          } else {
-            appState.glbFailedCount += 1;
+          if (!modelBase) return;
+          try {
+            const gltf = await gltfLoader.loadAsync(new URL(cfg.file, modelBase).href);
+            if (!subjectGroups[i].userData.loaded) mountGLTFToSlot(i, gltf);
+          } catch (err) {
+            console.warn("Could not load specimen", cfg.file, err);
           }
-        }
-
+        }));
         updateLoadingStatus();
-        const totalLoaded = subjectGroups.filter((g) => g.userData.loaded).length;
-        if (totalLoaded < SUBJECT_CONFIGS.length && !CAN_FETCH_RELATIVE) {
-          glbImportBannerEl.classList.remove("is-hidden");
-        }
+        glbImportBannerEl.classList.toggle("is-hidden", subjectGroups.every(g => g.userData.loaded));
       }
 
       async function handleUserSelectedGLBFiles(fileList) {

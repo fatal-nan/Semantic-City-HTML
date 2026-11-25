@@ -1784,72 +1784,51 @@
         }
       }
 
-      async function autoDiscoverAndLoadPods() {
-        let mounted = 0;
-
-        // 1) 在 http://localhost 或线上服务器（GitHub Pages）下：直接自动检索并读取 ./assets/models/pod_*.glb
-        if (window.location.protocol !== "file:") {
-          let candidateUrls = await discoverPodUrlsFromDirectory();
-          if (candidateUrls.length === 0) candidateUrls = FALLBACK_POD_URLS;
-
-          const fetched = await Promise.all(
-            candidateUrls.slice(0, ACTIVE_SLOTS).map(async (url) => {
-              try {
-                const res = await fetch(url);
-                if (!res.ok) return null;
-                const buf = await res.arrayBuffer();
-                if (!isValidGlbBuffer(buf)) return null;
-                return { url, name: url.split("/").pop(), buf };
-              } catch (e) {
-                return null;
-              }
-            })
-          );
-
-          for (const item of fetched) {
-            if (!item || mounted >= ACTIVE_SLOTS) continue;
-            try {
-              const slotIdx = GLB_SLOT_PRIORITY[mounted];
-              await parseAndMountGlb(item.buf, item.name, slotIdx);
-              mounted++;
-              console.info(`✓ 已自动检索并挂载 ${item.name} -> 槽位 #${slotIdx}`);
-            } catch (e) {
-              console.error("GLB 解析失败:", item.url, e);
-            }
+      async function restoreCachedPods() {
+        const db = await openPodDB();
+        if (!db) return;
+        const records = await new Promise((resolve) => {
+          const req = db.transaction("pods", "readonly").objectStore("pods").getAll();
+          req.onsuccess = () => resolve(req.result || []);
+          req.onerror = () => resolve([]);
+        });
+        db.close();
+        for (const rec of records) {
+          if (!rec?.data || !embryos[rec.slot] || embryos[rec.slot].hasCustomGlb) continue;
+          try {
+            await parseAndMountGlb(rec.data, rec.name, rec.slot);
+          } catch (err) {
+            console.warn("Could not restore cached pod", rec.slot, err);
           }
         }
+      }
 
-        // 2) 若当前为直接双击 file://（浏览器禁止自动读硬盘），则自动从 IndexedDB 恢复已同步的 pod_*.glb（与 index.html 同机制）
-        if (mounted === 0) {
+      async function autoDiscoverAndLoadPods() {
+        const fromFile = location.protocol === "file:";
+        if (fromFile) await restoreCachedPods().catch(err => console.warn("Pod cache unavailable", err));
+        const base = fromFile ? "https://fatal-nan.github.io/Semantic-City-HTML/" : document.baseURI;
+        const discovered = fromFile ? [] : await discoverPodUrlsFromDirectory();
+        const urls = (discovered.length ? discovered : FALLBACK_POD_URLS).slice(0, ACTIVE_SLOTS);
+        await Promise.all(urls.map(async (path, i) => {
+          const slot = GLB_SLOT_PRIORITY[i];
+          if (embryos[slot].hasCustomGlb) return;
           try {
-            const db = await openPodDB();
-            if (db) {
-              const records = await new Promise((resolve) => {
-                const req = db.transaction("pods", "readonly").objectStore("pods").getAll();
-                req.onsuccess = () => resolve(req.result || []);
-                req.onerror = () => resolve([]);
-              });
-              records.sort((a, b) => (a.name || "").localeCompare(b.name || "", undefined, { numeric: true }));
-              for (const rec of records) {
-                if (!rec || !rec.data || !embryos[rec.slot]) continue;
-                try {
-                  await parseAndMountGlb(rec.data, rec.name || `pod_${rec.slot}.glb`, rec.slot);
-                  mounted++;
-                  console.info(`✓ 已从本地缓存自动恢复 ${rec.name} -> 槽位 #${rec.slot}`);
-                } catch (e) {
-                  console.error("缓存 GLB 恢复失败:", rec.name, e);
-                }
-              }
+            const url = new URL(path, base);
+            const response = await fetch(url);
+            if (!response.ok) throw Error("HTTP " + response.status);
+            const data = await response.arrayBuffer();
+            if (!isValidGlbBuffer(data)) throw Error("Invalid GLB header");
+            const name = url.pathname.split("/").pop();
+            const gltf = await gltfLoader.parseAsync(data, new URL(".", url).href);
+            if (!embryos[slot].hasCustomGlb) {
+              embryos[slot].attachCustomGlb(gltf.scene, name);
+              console.info("Mounted pod", name, slot);
             }
-          } catch (e) {}
-        }
-
-        // 3) 只有在 file:// 首次双击且缓存里还没有模型时，才显示一次性「同步 models 文件夹」入口
-        if (mounted === 0 && window.location.protocol === "file:") {
-          setSyncPromptVisible(true);
-        } else {
-          setSyncPromptVisible(false);
-        }
+          } catch (err) { console.warn("Could not load pod", path, err); }
+        }));
+        const missing = () => urls.some((_, i) => !embryos[GLB_SLOT_PRIORITY[i]].hasCustomGlb);
+        if (!fromFile && missing()) await restoreCachedPods().catch(err => console.warn("Pod cache unavailable", err));
+        setSyncPromptVisible(missing());
       }
 
       // 一次性同步整个 models 文件夹：自动筛选所有 pod_*.glb 并永久缓存，之后双击直接自动加载
