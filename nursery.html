@@ -9,7 +9,7 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
       href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Instrument+Serif:ital@0;1&family=Plus+Jakarta+Sans:wght@400;500&display=swap"
-      rel="stylesheet"
+      rel="stylesheet" media="print" onload="this.media='all'"
     />
     <script type="importmap">
       {
@@ -19,6 +19,11 @@
         }
       }
     </script>
+    <link rel="modulepreload" crossorigin href="https://cdn.jsdelivr.net/npm/three@0.166.0/build/three.module.js" />
+    <link rel="modulepreload" crossorigin href="https://cdn.jsdelivr.net/npm/three@0.166.0/examples/jsm/loaders/GLTFLoader.js" />
+    <link rel="modulepreload" crossorigin href="https://cdn.jsdelivr.net/npm/three@0.166.0/examples/jsm/loaders/DRACOLoader.js" />
+    <link rel="modulepreload" crossorigin href="https://cdn.jsdelivr.net/npm/three@0.166.0/examples/jsm/utils/BufferGeometryUtils.js" />
+    <script defer src="./assets/specimens/loader.js"></script>
     <style>
       :root {
         color-scheme: dark;
@@ -1807,16 +1812,23 @@
         const fromFile = location.protocol === "file:";
         if (fromFile) await restoreCachedPods().catch(err => console.warn("Pod cache unavailable", err));
         const base = fromFile ? "https://fatal-nan.github.io/Semantic-City-HTML/" : document.baseURI;
-        const discovered = fromFile ? [] : await discoverPodUrlsFromDirectory();
+        // GitHub Pages serves static files without a directory index.
+        const useManifest = fromFile || location.hostname.endsWith(".github.io");
+        const discovered = useManifest ? [] : await discoverPodUrlsFromDirectory();
         const urls = (discovered.length ? discovered : FALLBACK_POD_URLS).slice(0, ACTIVE_SLOTS);
         await Promise.all(urls.map(async (path, i) => {
           const slot = GLB_SLOT_PRIORITY[i];
           if (embryos[slot].hasCustomGlb) return;
           try {
             const url = new URL(path, base);
-            const response = await fetch(url);
-            if (!response.ok) throw Error("HTTP " + response.status);
-            const data = await response.arrayBuffer();
+            let data;
+            try {
+              data = await window.loadPackedSpecimen(url);
+            } catch {
+              const response = await fetch(url);
+              if (!response.ok) throw Error("HTTP " + response.status);
+              data = await response.arrayBuffer();
+            }
             if (!isValidGlbBuffer(data)) throw Error("Invalid GLB header");
             const name = url.pathname.split("/").pop();
             const gltf = await gltfLoader.parseAsync(data, new URL(".", url).href);

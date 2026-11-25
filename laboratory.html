@@ -15,12 +15,18 @@
         }
       }
     </script>
+    <link rel="modulepreload" crossorigin href="https://cdn.jsdelivr.net/npm/three@0.166.0/build/three.module.js" />
+    <link rel="modulepreload" crossorigin href="https://cdn.jsdelivr.net/npm/three@0.166.0/examples/jsm/loaders/GLTFLoader.js" />
+    <link rel="modulepreload" crossorigin href="https://cdn.jsdelivr.net/npm/three@0.166.0/examples/jsm/loaders/DRACOLoader.js" />
+    <link rel="modulepreload" crossorigin href="https://cdn.jsdelivr.net/npm/three@0.166.0/examples/jsm/utils/BufferGeometryUtils.js" />
+    <link rel="modulepreload" crossorigin href="https://cdn.jsdelivr.net/npm/three@0.166.0/examples/jsm/controls/OrbitControls.js" />
+    <script defer src="./assets/specimens/loader.js"></script>
 
     <!-- ==================== 1. 样式表（统一 Dew 露珠奶白果冻 · 全 UI 零阴影） ==================== -->
     <style>
       @font-face {
         font-family: "Nightgazer";
-        src: url("./assets/fonts/nightgazer/Nightgazer14.ttf") format("truetype");
+        src: url("./assets/fonts/nightgazer/Nightgazer14.woff") format("woff"), url("./assets/fonts/nightgazer/Nightgazer14.ttf") format("truetype");
         font-display: swap;
       }
 
@@ -70,7 +76,7 @@
         position: fixed;
         inset: 0;
         z-index: 0;
-        background: url("./assets/images/background.png") center / cover no-repeat;
+        background: url("./assets/images/background.webp") center / cover no-repeat;
         opacity: 0.92;
         pointer-events: none;
       }
@@ -150,7 +156,7 @@
       .frame-image {
         position: absolute;
         inset: 0;
-        background: url("./assets/images/frame.png") center / 100% 100% no-repeat;
+        background: url("./assets/images/frame.webp") center / 100% 100% no-repeat;
         opacity: 0.95;
         animation: frameBreath 5.5s ease-in-out infinite, frameFloat 8s ease-in-out infinite;
         will-change: transform, opacity;
@@ -174,8 +180,8 @@
         );
         mix-blend-mode: screen;
         opacity: 0.54;
-        -webkit-mask-image: url("./assets/images/frame.png");
-        mask-image: url("./assets/images/frame.png");
+        -webkit-mask-image: url("./assets/images/frame.webp");
+        mask-image: url("./assets/images/frame.webp");
         -webkit-mask-size: 100vw 100vh;
         mask-size: 100vw 100vh;
         -webkit-mask-repeat: no-repeat;
@@ -187,7 +193,7 @@
       .frame-pulse {
         position: absolute;
         inset: 0;
-        background: url("./assets/images/frame.png") center / 100% 100% no-repeat;
+        background: url("./assets/images/frame.webp") center / 100% 100% no-repeat;
         opacity: 0.24;
         mix-blend-mode: screen;
         animation: framePulse 3.8s ease-in-out infinite;
@@ -1904,9 +1910,9 @@
         }
       }
 
-      async function getGLBBufferFromCache(modelId) {
+      async function getGLBBufferFromCache(dbPromise, modelId) {
         try {
-          const db = await openGLBDatabase();
+          const db = await dbPromise;
           return await new Promise((resolve, reject) => {
             const tx = db.transaction(STORE_NAME, "readonly");
             const req = tx.objectStore(STORE_NAME).get(modelId);
@@ -1919,8 +1925,9 @@
       }
 
       async function autoLoadAllGLBs() {
+        const dbPromise = openGLBDatabase().catch(() => null);
         await Promise.all(SUBJECT_CONFIGS.map(async (cfg, i) => {
-          const cached = await getGLBBufferFromCache(cfg.id);
+          const cached = await getGLBBufferFromCache(dbPromise, cfg.id);
           if (cached?.byteLength) {
             try {
               await parseAndMountGLBBuffer(i, cached);
@@ -1931,12 +1938,20 @@
           }
           if (!modelBase) return;
           try {
-            const gltf = await gltfLoader.loadAsync(new URL(cfg.file, modelBase).href);
+            const url = new URL(cfg.file, modelBase);
+            let gltf;
+            try {
+              const bytes = await window.loadPackedSpecimen(url);
+              gltf = await gltfLoader.parseAsync(bytes, new URL(".", url).href);
+            } catch {
+              gltf = await gltfLoader.loadAsync(url.href);
+            }
             if (!subjectGroups[i].userData.loaded) mountGLTFToSlot(i, gltf);
           } catch (err) {
             console.warn("Could not load specimen", cfg.file, err);
           }
         }));
+        (await dbPromise)?.close();
         updateLoadingStatus();
         glbImportBannerEl.classList.toggle("is-hidden", subjectGroups.every(g => g.userData.loaded));
       }

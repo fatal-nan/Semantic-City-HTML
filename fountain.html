@@ -9,7 +9,7 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
       href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,400;0,500;1,400&family=Instrument+Serif:ital@0;1&family=Plus+Jakarta+Sans:wght@400;500;600;700&family=Syne:wght@500;600;700&display=swap"
-      rel="stylesheet"
+      rel="stylesheet" media="print" onload="this.media='all'"
     />
     <style>
       :root {
@@ -644,6 +644,7 @@
         window.addEventListener("resize", resizeJelly);
         if (document.fonts && document.fonts.ready) {
           document.fonts.ready.then(updateTextTexture);
+          document.fonts.addEventListener("loadingdone", updateTextTexture);
         }
 
         const uResA = jgl.getUniformLocation(progA, "iResolution");
@@ -3040,7 +3041,7 @@
       }
 
       // ==================== 3. Application Bootstrap ====================
-      window.addEventListener("load", () => {
+      window.addEventListener("DOMContentLoaded", () => {
         const fountainJelly = createJellyDialogBox(
           "lcJellyCanvas",
           "The Fountain",

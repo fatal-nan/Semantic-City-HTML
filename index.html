@@ -4,6 +4,17 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
     <title>Nocturnal Bio-Sculptural Island · Interactive Ecological Installation</title>
+    <script>
+      for (const tree of ["leftpinkone", "rightferntwo"]) {
+        const localFile = location.protocol === "file:";
+        const link = document.createElement("link");
+        link.rel = "preload";
+        link.as = localFile ? "script" : "fetch";
+        if (!localFile) link.crossOrigin = "anonymous";
+        link.href = "./assets/home-trees/" + tree + (localFile ? ".js" : ".glb");
+        document.head.appendChild(link);
+      }
+    </script>
     <link rel="icon" href="data:," />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -1688,7 +1699,11 @@ function createIslandRenderer(gl, vertex, fragment, split) {
 
         function decodeGLBEmbeddedTextures(gltfJson, binChunk) {
           if (!gltfJson.images || !gltfJson.textures) return [];
-          return gltfJson.textures.map((texDef) => {
+          const usedTextures = new Set((gltfJson.materials || []).map(
+            mat => mat.pbrMetallicRoughness?.baseColorTexture?.index
+          ));
+          return gltfJson.textures.map((texDef, index) => {
+            if (!usedTextures.has(index)) return null;
             const imgDef = texDef.source !== undefined ? gltfJson.images[texDef.source] : null;
             if (!imgDef) return null;
             let blobUrl = null;
@@ -2130,37 +2145,70 @@ function createIslandRenderer(gl, vertex, fragment, split) {
         } catch (e) {}
       }
 
+      // These homepage assets contain the original mesh and the base-color map used by the tree shader.
+      async function loadHomeTree(fileName) {
+        if (location.protocol !== "file:") {
+          const response = await fetch(new URL("./assets/home-trees/" + encodeURIComponent(fileName), document.baseURI));
+          if (!response.ok) throw Error("HTTP " + response.status);
+          return response.arrayBuffer();
+        }
+        return new Promise((resolve, reject) => {
+          const script = document.createElement("script");
+          script.src = new URL("./assets/home-trees/" + encodeURIComponent(fileName.replace(/\.glb$/i, ".js")), document.baseURI);
+          script.onload = () => {
+            try {
+              const data = script.glb;
+              if (typeof data !== "string") throw Error("Invalid homepage tree data");
+              if (typeof Uint8Array.fromBase64 === "function") {
+                resolve(Uint8Array.fromBase64(data).buffer);
+              } else {
+                const binary = atob(data);
+                const bytes = new Uint8Array(binary.length);
+                for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+                resolve(bytes.buffer);
+              }
+            } catch (err) { reject(err); }
+            finally { delete script.glb; script.remove(); }
+          };
+          script.onerror = () => { script.remove(); reject(new Error("Missing homepage asset: " + fileName)); };
+          document.head.appendChild(script);
+        });
+      }
+
       async function fetchDefaultGLBsFromServer(loadedNames) {
         const modelBase = location.protocol === "file:"
           ? "https://fatal-nan.github.io/Semantic-City-HTML/assets/models/"
           : new URL("./assets/models/", document.baseURI);
-        const missing = (DEFAULT_AI_SAVED_LAYOUT.glbParts || []).filter(
-          (pt) => !loadedNames.has(pt.fileName) && !loadedNames.has(pt.name)
+        const missing = DEFAULT_AI_SAVED_LAYOUT.glbParts.filter(
+          pt => !loadedNames.has(pt.fileName) && !loadedNames.has(pt.name)
         );
-        if (!missing.length) return;
-        const results = await Promise.all(
-          missing.map(async (pt) => {
+        const downloads = missing.map(async pt => {
+          try {
+            return await loadHomeTree(pt.fileName);
+          } catch {
             try {
               const res = await fetch(new URL(encodeURIComponent(pt.fileName), modelBase));
               if (!res.ok) throw Error("HTTP " + res.status);
-              const buf = await res.arrayBuffer();
-              return { pt, buf };
-            } catch (e) {
-              console.warn("Could not load tree", pt.fileName, e);
+              return await res.arrayBuffer();
+            } catch (err) {
+              console.warn("Could not load tree", pt.fileName, err);
               return null;
             }
-          })
-        );
-        let added = false;
-        results.forEach((item) => {
-          if (!item || !item.buf) return;
-          try {
-            glbSystem.parseGLBArrayBuffer(item.buf, item.pt.fileName, item.pt);
-            loadedNames.add(item.pt.fileName);
-            added = true;
-          } catch (err) { console.warn("Could not mount tree", item.pt.fileName, err); }
+          }
         });
-        if (added) refreshStudioUI();
+        // Preserve the saved order (also used for palette selection) while allowing a paint between trees.
+        for (const [i, pt] of missing.entries()) {
+          const buf = await downloads[i];
+          if (!buf) continue;
+          try {
+            glbSystem.parseGLBArrayBuffer(buf, pt.fileName, pt);
+            loadedNames.add(pt.fileName);
+            refreshStudioUI();
+          } catch (err) { console.warn("Could not mount tree", pt.fileName, err); }
+          if (i + 1 < missing.length && !document.hidden) {
+            await new Promise(resolve => requestAnimationFrame(() => setTimeout(resolve, 0)));
+          }
+        }
       }
 
       async function restoreSavedLayoutAndGLBsOnStartup() {
@@ -2248,6 +2296,25 @@ function createIslandRenderer(gl, vertex, fragment, split) {
         nursery: { layer: document.getElementById("layerNursery"), frame: document.getElementById("frameNursery") },
         laboratory: { layer: document.getElementById("layerLaboratory"), frame: document.getElementById("frameLaboratory") }
       };
+
+      // Warm just the requested document on navigation intent, without creating a hidden WebGL scene.
+      if (location.protocol !== "file:" && !navigator.connection?.saveData) {
+        const warmed = new Set();
+        for (const btn of document.querySelectorAll(".nav-item[data-view]")) {
+          const href = SUBPAGE_URLS[btn.dataset.view];
+          if (!href) continue;
+          const warm = () => {
+            if (warmed.has(href)) return;
+            warmed.add(href);
+            const link = document.createElement("link");
+            link.rel = "prefetch";
+            link.href = href;
+            document.head.appendChild(link);
+          };
+          btn.addEventListener("pointerenter", warm, { once: true });
+          btn.addEventListener("focus", warm, { once: true });
+        }
+      }
 
       function switchView(viewName, queryParams = "") {
         camState.introActive = false;
